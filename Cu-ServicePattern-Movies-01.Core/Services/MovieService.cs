@@ -1,6 +1,9 @@
 ﻿using Cu_ServicePattern_Movies_01.Core.Data;
 using Cu_ServicePattern_Movies_01.Core.Interfaces;
 using Cu_ServicePattern_Movies_01.Core.Services.Interfaces;
+using Cu_ServicePattern_Movies_01.Core.Services.Models;
+using Cu_ServicePattern_Movies_01.Core.Services.Models.RequestModels;
+using Cu_ServicePattern_Movies_01.Core.Services.Models.ResultModels;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using System;
@@ -22,39 +25,61 @@ namespace Cu_ServicePattern_Movies_01.Core.Services
             _fileService = fileService;
         }
 
-        public async Task<bool> CreateAsync(string title,DateTime releaseDate, 
-            decimal price, int companyId, IFormFile image, IEnumerable<int> actorIds, 
-            IEnumerable<int> directorIds)
+        public async Task<BaseResultModel> CreateAsync(MovieCreateRequestModel movieCreateRequestModel)
         {
+            //perform check
+            //check if company exists
+            if(!await _movieDbContext.Companies.AnyAsync(c => c.Id == movieCreateRequestModel.CompanyId))
+            {
+                return new ResultModel<Movie>
+                {
+                    IsSuccess = false,
+                    Errors = new List<string> { "Company not found!" }
+                };
+            }
+            //check if title exists
+            //use IQueryable
+            if(await GetAll().AnyAsync(m => m.Title.ToUpper() == movieCreateRequestModel.Title.ToUpper()))
+            {
+                return new ResultModel<Movie>
+                {
+                    IsSuccess = false,
+                    Errors = new List<string> { "Movie exists!" }
+                };
+            }
             //create the movie
             var movie = new Movie();
-            movie.Title = title;
-            movie.Price = price;
-            movie.ReleaseDate = releaseDate;
-            movie.CompanyId = companyId;
+            movie.Title = movieCreateRequestModel.Title;
+            movie.Price = movieCreateRequestModel.Price;
+            movie.ReleaseDate = movieCreateRequestModel.ReleaseDate;
+            movie.CompanyId = movieCreateRequestModel.CompanyId;
             //actors
             movie.Actors = await _movieDbContext
                 .Actors
-                .Where(m => actorIds.Contains(m.Id)).ToListAsync();
+                .Where(m => movieCreateRequestModel.ActorIds.Contains(m.Id)).ToListAsync();
             //Directors
             movie.Directors = await _movieDbContext
                 .Directors
-                .Where(d => directorIds.Contains(d.Id)).ToListAsync();
+                .Where(d => movieCreateRequestModel.DirectorIds.Contains(d.Id)).ToListAsync();
             //image
-            if (image != null)
+            if (movieCreateRequestModel.Image != null)
             {
-                movie.Image = await _fileService.Store(image);
+                movie.Image = await _fileService.Store(movieCreateRequestModel.Image);
             }
             //add to context
-            await _movieDbContext.Movies.AddAsync(movie);
+            _movieDbContext.Movies.Add(movie);
             //savechanges
             return await SaveChangesAsync();
         }
 
-        public async Task<bool> DeleteAsync(int id)
+        public async Task<BaseResultModel> DeleteAsync(int id)
         {
-            var movie = await GetbyIdAsync(id);
-            if(movie != null)
+            var movie = await _movieDbContext.Movies
+               .Include(m => m.Company)
+               .Include(m => m.Actors)
+               .Include(m => m.Directors)
+               .FirstOrDefaultAsync(m => m.Id == id);
+            if (movie != null)
             {
                 //delete the movie image
                 if (!String.IsNullOrEmpty(movie.Image))
@@ -65,7 +90,11 @@ namespace Cu_ServicePattern_Movies_01.Core.Services
                 //savechanges
                 return await SaveChangesAsync();
             }
-            return false;
+            return new BaseResultModel 
+            { 
+                IsSuccess = false,
+                Errors = new List<string> { "Movie not found!" }
+            };
         }
 
         public IQueryable<Movie> GetAll()
@@ -73,72 +102,116 @@ namespace Cu_ServicePattern_Movies_01.Core.Services
             return _movieDbContext.Movies.AsQueryable();
         }
 
-        public async Task<IEnumerable<Movie>> GetallAsync()
+        public async Task<ResultModel<Movie>> GetAllAsync()
         {
-            return await _movieDbContext.Movies
+            return new ResultModel<Movie>
+            {
+                IsSuccess = true,
+                Items = await _movieDbContext.Movies
                 .Include(m => m.Company)
                 .Include(m => m.Actors)
                 .Include(m => m.Directors)
-                .ToListAsync();
+                .ToListAsync(),
+            };
         }
 
-        public async Task<Movie> GetbyIdAsync(int id)
+        public async Task<ResultModel<Movie>> GetbyIdAsync(int id)
         {
-            return await _movieDbContext.Movies
+            //check if exists
+            var movie = await _movieDbContext.Movies
                .Include(m => m.Company)
                .Include(m => m.Actors)
                .Include(m => m.Directors)
                .FirstOrDefaultAsync(m => m.Id == id);
+            if(movie == null)
+            {
+                return new ResultModel<Movie>
+                {
+                    IsSuccess = false,
+                    Errors = new List<string> { "Movie not found" }
+                };
+            }
+            return new ResultModel<Movie>
+            {
+                IsSuccess = true,
+                Items = new List<Movie> { movie }
+            };
         }
 
-        public async Task<bool> SaveChangesAsync()
+        public async Task<BaseResultModel> SaveChangesAsync()
         {
             try
             {
                 await _movieDbContext.SaveChangesAsync();
-                return true;
+                return new BaseResultModel { IsSuccess = true };
             }
             catch (DbUpdateException dbUpdateException)
             {
                 Console.WriteLine(dbUpdateException.Message);
-                return false;
+                return new BaseResultModel 
+                {
+                    IsSuccess = false,
+                    Errors = new List<string> { "A unknown error occurred. Please try again later." }
+                };
             }
         }
 
-        public async Task<bool> UpdateAsync(int id,DateTime releasedate, string title, decimal price, int companyId, IFormFile image, IEnumerable<int> actorIds, IEnumerable<int> directorIds)
+        public async Task<BaseResultModel> UpdateAsync(MovieUpdateRequestModel movieUpdateRequestModel)
         {
             //update
-            var movie = await GetbyIdAsync(id);
+            var movie = await _movieDbContext.Movies
+               .Include(m => m.Company)
+               .Include(m => m.Actors)
+               .Include(m => m.Directors)
+               .FirstOrDefaultAsync(m => m.Id == movieUpdateRequestModel.Id);
             if (movie == null)
             {
-                return false;
+                return new BaseResultModel 
+                {
+                    IsSuccess = false,
+                    Errors = new List<string>{ "Movie not found" }
+                };
+            }
+            //check if title exists
+            if(movieUpdateRequestModel.Title != movie.Title)
+            {
+                //check if new title exists
+                if(await GetAll().AnyAsync(m => m.Title.ToUpper() == movieUpdateRequestModel.Title.ToUpper()))
+                {
+                    //new title already exists
+                    new BaseResultModel
+                    {
+                        IsSuccess = false,
+                        Errors = new List<string> { "Title exists!" }
+                    };
+                }
             }
             //edit the properties
-            movie.Title = title;
-            movie.ReleaseDate = releasedate;
-            movie.CompanyId = companyId;
-            movie.Price = price;
+            movie.Title = movieUpdateRequestModel.Title;
+            movie.ReleaseDate = movieUpdateRequestModel.ReleaseDate;
+            movie.CompanyId = movieUpdateRequestModel.CompanyId;
+            movie.Price = movieUpdateRequestModel.Price;
             //actors
             movie.Actors.Clear();
             movie.Actors = await _movieDbContext
                 .Actors
-                .Where(m => actorIds.Contains(m.Id)).ToListAsync();
+                .Where(m => movieUpdateRequestModel.ActorIds.Contains(m.Id)).ToListAsync();
             //Directors
             movie.Directors.Clear();
             //get the list of the selected directors
             movie.Directors = await _movieDbContext
                 .Directors
-                .Where(d => directorIds.Contains(d.Id)).ToListAsync();
+                .Where(d => movieUpdateRequestModel.DirectorIds.Contains(d.Id)).ToListAsync();
             //image
-            if (image != null)
+            if (movieUpdateRequestModel.Image != null)
             {
                 if (movie.Image != null)
                 {
-                    movie.Image = await _fileService.Update(image, movie.Image);
+                    movie.Image = await _fileService.Update(movieUpdateRequestModel.Image, movie.Image);
                 }
                 else
                 {
-                    movie.Image = await _fileService.Store(image);
+                    movie.Image = await _fileService.Store(movieUpdateRequestModel.Image);
                 }
 
             }
